@@ -1,16 +1,15 @@
 // ==UserScript==
-// @name          Personalzuweiser auto-mod v4.3 (FMS-Status-Logik)
+// @name          Personalzuweiser auto-mod v4.4 (Korrigierte Logik & Logging)
 // @namespace     personalzuweiser.leitstellenspiel.de
-// @version       4.3.18-Single-FMS-Fix
+// @version       4.4.0
 // @license       BSD-3-Clause
 // @author        BOS-Ernie, Masklin, BAHendrik (modifiziert und fusioniert durch KI)
-// @description   V4.3.18: Fügt die fehlende Logik zum Setzen des FMS-Status bei der Einzel-Fahrzeug-Zuweisung hinzu.
+// @description   V4.4.0: Korrigiert die Zuweisungslogik, um das fälschliche Auffüllen mit unausgebildetem Personal bei Spezialfahrzeugen zu verhindern. Fügt zudem detailliertere Log-Ausgaben zur besseren Nachvollziehbarkeit hinzu.
 // @match         https://*.leitstellenspiel.de/buildings/*
 // @match         https://*.leitstellenspiel.de/dispatchcenters/*
 // @match         https://*.leitstellenspiel.de/vehicles/*/zuweisung
 // @run-at        document-idle
 // @grant         none
-
 // ==/UserScript==
 
 /* global $, I18n */
@@ -49,8 +48,7 @@
         { id: 172, caption: "MTW TeSi", maxStaff: 6, training: [{ key: "disaster_response_technology", number: 6 }] },
         { id: 126, caption: "MTF Drohne", maxStaff: 5, training: [{ key: "fire_drone", number: 5 }] },
         { id: 74, caption: "NAW", maxStaff: 3, training: [{ key: "notarzt", number: 3 }] },
-        { id: 51, caption: "FüKW (Polizei)", maxStaff: 2, training: [{ key: "police_fukw", number: 2 }] },
-        { id: 57, caption: "GW-San", maxStaff: 6, training: [{ key: "betreuung", number: 4 }] }
+        { id: 51, caption: "FüKW (Polizei)", maxStaff: 2, training: [{ key: "police_fukw", number: 2 }] }
     ];
 
     function log(message) { console.log(`[PZ-Mod] ${message}`); }
@@ -150,21 +148,30 @@
         };
     }
 
-    async function runControlCenterAssignment(vehicleIds, unassignMode = false) { /* ... unverändert ... */ }
-    async function runAssignmentProcess(vehicleIds, unassignMode = false, isSubProcess = false, uiContainer = null, skipGridCreation = false) { /* ... unverändert ... */ }
-    async function resetVehicle() { /* ... unverändert ... */ }
-
-    // MODIFIZIERT: Logik zum Setzen des FMS-Status am Ende hinzugefügt
+    // MODIFIZIERT: Logik zum Auffüllen mit unausgebildetem Personal korrigiert und Logging hinzugefügt
     async function assignSingleVehicleLogic() {
         log("⚙️ Starte Einzelzuweisung...");
         const vehicleData = await (await fetch(`/api/v2/vehicles/${currentVehicleId}`)).json();
         const config = vehiclesConfiguration.find(v => v.id === vehicleData.result.vehicle_type);
-        if (!config || config.maxStaff === 0) {
+
+        if (!config) {
+            log(`⚠️ Keine Konfiguration für Fahrzeugtyp-ID ${vehicleData.result.vehicle_type} gefunden. Breche ab.`);
+            return;
+        }
+
+        // NEU: Detailliertes Logging der gefundenen Fahrzeug-Konfiguration
+        const trainingRequirements = config.training.length > 0 ? JSON.stringify(config.training) : "Keine";
+        log(`[INFO] Konfiguration für '${vehicleData.result.caption}' (Typ-ID ${config.id}): Max. Personal: ${config.maxStaff}, Ausbildungen: ${trainingRequirements}`);
+
+        if (config.maxStaff === 0) {
             log("ℹ️ Kein Personal benötigt.");
             return;
         }
+
         await resetVehicle();
         await new Promise(r => setTimeout(r, 500));
+
+        // Zuweisung von Personal mit erforderlicher Ausbildung
         for (const req of config.training) {
             const personnel = Array.from(document.querySelectorAll(`a.btn-success[personal_id]`)).filter(btn => JSON.parse(btn.closest('tr').getAttribute("data-filterable-by").replace(/'/g, '"')).includes(req.key));
             for (let i = 0; i < req.number && i < personnel.length; i++) {
@@ -172,17 +179,23 @@
                 await new Promise(r => setTimeout(r, 250));
             }
         }
+
         const assignedCount = document.querySelectorAll(".btn-assigned").length;
         const remaining = config.maxStaff - assignedCount;
-        if (remaining > 0) {
+
+        // MODIFIZIERT: Fülle nur dann mit unausgebildetem Personal auf, wenn das Fahrzeug von vornherein KEINE spezielle Ausbildung erfordert.
+        if (remaining > 0 && config.training.length === 0) {
+            log(`[INFO] Fahrzeugtyp benötigt keine spezielle Ausbildung. Fülle ${remaining} freie Plätze mit verfügbarem Personal auf.`);
             const personnel = Array.from(document.querySelectorAll(`a.btn-success[personal_id]`)).filter(btn => JSON.parse(btn.closest('tr').getAttribute("data-filterable-by").replace(/'/g, '"')).filter(q => q).length === 0);
             for (let i = 0; i < remaining && i < personnel.length; i++) {
                 personnel[i].click();
                 await new Promise(r => setTimeout(r, 250));
             }
+        } else if (remaining > 0) {
+            log(`[INFO] Fahrzeugtyp benötigt spezielle Ausbildung. ${assignedCount} von ${config.maxStaff} Spezialisten zugewiesen. Verbleibende Plätze werden nicht aufgefüllt.`);
         }
 
-        // NEU: Warte kurz und setze dann den FMS-Status basierend auf dem Ergebnis
+        // FMS-Status setzen
         await new Promise(r => setTimeout(r, 300));
         const finalAssignedCount = document.querySelectorAll(".btn-assigned").length;
         log(`Zuweisung beendet. ${finalAssignedCount} von ${config.maxStaff} Personen zugewiesen.`);
@@ -198,70 +211,7 @@
         log("✅ Zuweisung abgeschlossen.");
     }
 
-    function addVehicleAssignmentPageButtons() { /* ... unverändert ... */ }
-    function getVisibleVehicleIds() { /* ... unverändert ... */ }
-    function getAllVehicleIds() { /* ... unverändert ... */ }
-    function setButtonsDisabled(disabled) { /* ... unverändert ... */ }
-    function addOverviewPageButtons(isControlCenterPage) { /* ... unverändert ... */ }
-    function addCustomStyles() { /* ... unverändert ... */ }
-    function initializeLogicForTablePages() { /* ... unverändert ... */ }
-    async function main() { /* ... unverändert ... */ }
-
-    // Unveränderte Funktionen hier einkopiert, um das Skript vollständig zu halten
-    async function runControlCenterAssignment(vehicleIds, unassignMode = false) {
-        if (isProcessRunning) return;
-        isProcessRunning = true;
-        setButtonsDisabled(true);
-        const modeText = unassignMode ? "Entzuweisung" : "Zuweisung";
-        log(`🚀 Starte ${modeText} für die Leitstelle...`);
-        const mainUiContainer = document.createElement('div');
-        const targetElement = document.querySelector("#vehicle_table_wrapper .panel-heading") || document.querySelector("#vehicle_table");
-        if (targetElement) targetElement.before(mainUiContainer);
-        const statusDiv = document.createElement('div');
-        statusDiv.id = 'pz-status-text';
-        statusDiv.style.cssText = "margin-bottom: 5px; font-weight: bold; font-size: 1.2em; padding: 5px; background-color: #2d3748; border-radius: 5px; color: white;";
-        mainUiContainer.appendChild(statusDiv);
-        statusDiv.textContent = `Sammle Details für ${vehicleIds.length} Fahrzeuge...`;
-        const allVehicleDetails = (await Promise.all(
-            vehicleIds.map(id => fetch(`/api/v2/vehicles/${id}`).then(res => res.json()).then(data => data.result).catch(() => null))
-        )).filter(Boolean);
-        createVehicleGrid(allVehicleDetails, mainUiContainer);
-        const buildings = new Map();
-        document.querySelectorAll('#vehicle_table tbody tr').forEach(row => {
-            const vehicleLink = row.querySelector('a[href*="/vehicles/"]');
-            const vehicleId = vehicleLink?.href.match(/\/vehicles\/(\d+)/)?.[1];
-            if (!vehicleId || !vehicleIds.includes(vehicleId)) return;
-            const buildingLink = row.querySelector('td:nth-of-type(4) a[href*="/buildings/"]');
-            const buildingId = buildingLink?.href.match(/\/buildings\/(\d+)/)?.[1];
-            const buildingName = buildingLink?.textContent.trim() || 'Unbekannte Wache';
-            if (buildingId) {
-                if (!buildings.has(buildingId)) buildings.set(buildingId, { name: buildingName, vehicleIds: [] });
-                buildings.get(buildingId).vehicleIds.push(vehicleId);
-            }
-        });
-        if (buildings.size === 0) {
-            log("⚠️ Keine Wachen oder Fahrzeuge zur Bearbeitung gefunden.");
-            isProcessRunning = false; setButtonsDisabled(false); return;
-        }
-        log(`✅ ${buildings.size} Wachen identifiziert. Starte sequenzielle Abarbeitung.`);
-        try {
-            let buildingCount = 0;
-            for (const [buildingId, data] of buildings.entries()) {
-                buildingCount++;
-                statusDiv.textContent = `[${buildingCount}/${buildings.size}] Bearbeite Wache: ${data.name}`;
-                await runAssignmentProcess(data.vehicleIds, unassignMode, true, null, true);
-            }
-            log("🏁 Leitstellen-Prozess abgeschlossen! Seite wird in 5 Sekunden neu geladen.");
-            statusDiv.textContent = "Prozess abgeschlossen! Seite wird neu geladen...";
-            setTimeout(() => window.location.reload(), 5000);
-        } catch (error) {
-            log(`❌ Ein schwerwiegender Fehler im Leitstellen-Prozess ist aufgetreten: ${error.message}`);
-            statusDiv.textContent = `Ein Fehler ist aufgetreten: ${error.message}`;
-        } finally {
-            isProcessRunning = false;
-            setButtonsDisabled(false);
-        }
-    }
+    // MODIFIZIERT: Logik zum Auffüllen mit unausgebildetem Personal korrigiert und Logging hinzugefügt
     async function runAssignmentProcess(vehicleIds, unassignMode = false, isSubProcess = false, uiContainer = null, skipGridCreation = false) {
         if (!isSubProcess) { if (isProcessRunning) return; isProcessRunning = true; setButtonsDisabled(true); }
         const modeText = unassignMode ? "Entzuweisung" : "Zuweisung";
@@ -333,6 +283,11 @@
                     for (const vehicle of vehicleDetails) {
                         const config = vehiclesConfiguration.find(v => v.id === vehicle.vehicle_type);
                         if (!config || config.maxStaff === 0 || skippableCaptionPrefixes.some(p => vehicle.caption.toLowerCase().startsWith(p))) { continue; }
+
+                        // NEU: Detailliertes Logging
+                        const trainingRequirements = (config.training || []).length > 0 ? JSON.stringify(config.training) : "Keine";
+                        log(`[PLANUNG] Verarbeite '${vehicle.caption}' (Typ-ID ${config.id}): Max. Personal: ${config.maxStaff}, Ausbildungen: ${trainingRequirements}`);
+
                         let assignedCount = 0;
                         for (const req of (config.training || [])) {
                             for (let i = 0; i < req.number && assignedCount < config.maxStaff; i++) {
@@ -344,14 +299,19 @@
                                 }
                             }
                         }
-                        for (let i = assignedCount; i < config.maxStaff; i++) {
-                            const personIndex = personnelPool.findIndex(p => p.qualifications.length === 0);
-                            if (personIndex > -1) {
-                                assignTasks.push({ url: `/vehicles/${vehicle.id}/zuweisungDo/${personnelPool[personIndex].id}`, vehicleId: vehicle.id });
-                                personnelPool.splice(personIndex, 1);
-                                assignedCount++;
+
+                        // MODIFIZIERT: Fülle nur dann mit unausgebildetem Personal auf, wenn das Fahrzeug von vornherein KEINE spezielle Ausbildung erfordert.
+                        if ((config.training || []).length === 0) {
+                            for (let i = assignedCount; i < config.maxStaff; i++) {
+                                const personIndex = personnelPool.findIndex(p => p.qualifications.length === 0);
+                                if (personIndex > -1) {
+                                    assignTasks.push({ url: `/vehicles/${vehicle.id}/zuweisungDo/${personnelPool[personIndex].id}`, vehicleId: vehicle.id });
+                                    personnelPool.splice(personIndex, 1);
+                                    assignedCount++;
+                                }
                             }
                         }
+
                         if (assignedCount < config.maxStaff) { incompleteVehicles.add(vehicle.id); }
                     }
                     if (assignTasks.length > 0) {
@@ -379,6 +339,63 @@
             console.error("Full error details:", error);
         } finally {
             if (!isSubProcess) { isProcessRunning = false; setButtonsDisabled(false); }
+        }
+    }
+
+    // --- AB HIER KEINE ÄNDERUNGEN ---
+
+    async function runControlCenterAssignment(vehicleIds, unassignMode = false) {
+        if (isProcessRunning) return;
+        isProcessRunning = true;
+        setButtonsDisabled(true);
+        const modeText = unassignMode ? "Entzuweisung" : "Zuweisung";
+        log(`🚀 Starte ${modeText} für die Leitstelle...`);
+        const mainUiContainer = document.createElement('div');
+        const targetElement = document.querySelector("#vehicle_table_wrapper .panel-heading") || document.querySelector("#vehicle_table");
+        if (targetElement) targetElement.before(mainUiContainer);
+        const statusDiv = document.createElement('div');
+        statusDiv.id = 'pz-status-text';
+        statusDiv.style.cssText = "margin-bottom: 5px; font-weight: bold; font-size: 1.2em; padding: 5px; background-color: #2d3748; border-radius: 5px; color: white;";
+        mainUiContainer.appendChild(statusDiv);
+        statusDiv.textContent = `Sammle Details für ${vehicleIds.length} Fahrzeuge...`;
+        const allVehicleDetails = (await Promise.all(
+            vehicleIds.map(id => fetch(`/api/v2/vehicles/${id}`).then(res => res.json()).then(data => data.result).catch(() => null))
+        )).filter(Boolean);
+        createVehicleGrid(allVehicleDetails, mainUiContainer);
+        const buildings = new Map();
+        document.querySelectorAll('#vehicle_table tbody tr').forEach(row => {
+            const vehicleLink = row.querySelector('a[href*="/vehicles/"]');
+            const vehicleId = vehicleLink?.href.match(/\/vehicles\/(\d+)/)?.[1];
+            if (!vehicleId || !vehicleIds.includes(vehicleId)) return;
+            const buildingLink = row.querySelector('td:nth-of-type(4) a[href*="/buildings/"]');
+            const buildingId = buildingLink?.href.match(/\/buildings\/(\d+)/)?.[1];
+            const buildingName = buildingLink?.textContent.trim() || 'Unbekannte Wache';
+            if (buildingId) {
+                if (!buildings.has(buildingId)) buildings.set(buildingId, { name: buildingName, vehicleIds: [] });
+                buildings.get(buildingId).vehicleIds.push(vehicleId);
+            }
+        });
+        if (buildings.size === 0) {
+            log("⚠️ Keine Wachen oder Fahrzeuge zur Bearbeitung gefunden.");
+            isProcessRunning = false; setButtonsDisabled(false); return;
+        }
+        log(`✅ ${buildings.size} Wachen identifiziert. Starte sequenzielle Abarbeitung.`);
+        try {
+            let buildingCount = 0;
+            for (const [buildingId, data] of buildings.entries()) {
+                buildingCount++;
+                statusDiv.textContent = `[${buildingCount}/${buildings.size}] Bearbeite Wache: ${data.name}`;
+                await runAssignmentProcess(data.vehicleIds, unassignMode, true, null, true);
+            }
+            log("🏁 Leitstellen-Prozess abgeschlossen! Seite wird in 5 Sekunden neu geladen.");
+            statusDiv.textContent = "Prozess abgeschlossen! Seite wird neu geladen...";
+            setTimeout(() => window.location.reload(), 5000);
+        } catch (error) {
+            log(`❌ Ein schwerwiegender Fehler im Leitstellen-Prozess ist aufgetreten: ${error.message}`);
+            statusDiv.textContent = `Ein Fehler ist aufgetreten: ${error.message}`;
+        } finally {
+            isProcessRunning = false;
+            setButtonsDisabled(false);
         }
     }
     async function resetVehicle() { log("🧹 Personal wird entfernt..."); const buttons = document.querySelectorAll(".btn-assigned.btn.btn-default"); for (let i = buttons.length - 1; i >= 0; i--) { buttons[i].click(); await new Promise(r => setTimeout(r, 250)); } log("✅ Fahrzeug geleert."); }
